@@ -5,72 +5,80 @@ import requests
 import telebot
 from flask import Flask
 
+# Cấu hình
+BOT_TOKEN = "8527232891:AAGrm_KA-2EwX6nj39DYSIXm_guMXxKSebg"
+CHAT_ID = "6285849261" # ID của bạn
+API_LICH_SU = "https://bottele-production-4be9.up.railway.app/api/history/taixiu"
+
+# Khởi tạo
 app = Flask(__name__)
+bot = telebot.TeleBot(BOT_TOKEN)
+last_processed_phien = None
+last_prediction = None
+stats = {"thang": 0, "thua": 0}
 
 @app.route('/')
 def home():
     return "Bot đang hoạt động!"
 
-def run_flask():
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+def thuat_toan_du_doan(history):
+    danh_sach_kq = [str(p.get('Ket_qua', '')).lower() for p in history]
+    tai_count = sum(1 for k in danh_sach_kq if 'tai' in k)
+    xiu_count = len(danh_sach_kq) - tai_count
+    
+    # Dự đoán
+    if tai_count >= 6: du_doan, dot = "Xỉu", "🔵"
+    else: du_doan, dot = "Tài", "🔴"
+    
+    rate_tai = round((tai_count / len(danh_sach_kq)) * 100)
+    rate_xiu = round((xiu_count / len(danh_sach_kq)) * 100)
+    return du_doan, dot, rate_tai, rate_xiu
 
-BOT_TOKEN = "8527232891:AAGrm_KA-2EwX6nj39DYSIXm_guMXxKSebg"
-CHAT_ID = ""  # Điền CHAT_ID dạng số nếu muốn bot tự bắn tin nhắn
-
-bot = telebot.TeleBot(BOT_TOKEN)
-API_LICH_SU = "https://bottele-production-4be9.up.railway.app/api/history/taixiu"
-
-def get_data_and_predict():
-    try:
-        res = requests.get(API_LICH_SU, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            history = data.get('history', []) if isinstance(data, dict) else data
-            if history and isinstance(history, list):
-                latest = history[0]
-                phien = latest.get('Phien', 'N/A')
-                xx1 = latest.get('Xuc_xac_1', 0)
-                xx2 = latest.get('Xuc_xac_2', 0)
-                xx3 = latest.get('Xuc_xac_3', 0)
-                tong = latest.get('Tong', 0)
-                kq = str(latest.get('Ket_qua', ''))
-
-                # Tính tỷ lệ
-                tai_c = sum(1 for p in history[:10] if 'tai' in str(p.get('Ket_qua','')).lower())
-                xiu_c = len(history[:10]) - tai_c
-                r_tai, r_xiu = round(tai_c*10), round(xiu_c*10)
-                du_doan = "Tài 🔴" if r_tai <= r_xiu else "Xỉu 🔵"
-
-                msg = (
-                    f"╭━━━ KẾT QUẢ PHIÊN ━━━╮\n"
-                    f" Phiên: {phien}\n"
-                    f" Xúc xắc: {xx1} · {xx2} · {xx3} → Tổng {tong}\n"
-                    f" Kết quả: {kq}\n"
-                    f"╰━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
-                    f"╭━━━ 🤖 DỰ ĐOÁN MD5 🤖 ━━━╮\n"
-                    f" 🎯 Dự đoán phiên sau: {du_doan}\n"
-                    f" ⚖️ Tỷ lệ: Tài {r_tai}% · Xỉu {r_xiu}%\n"
-                    f"╰━━━━━━━━━━━━━━━━━━━━━━╯"
-                )
-                return msg
-    except Exception as e:
-        print(f"Lỗi API: {e}")
-    return "❌ Không thể lấy dữ liệu từ API."
-
-@app.route('/test')
-def test():
-    return "OK"
-
-@bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    bot.reply_to(message, "Gõ /dudoan để nhận kết quả phân tích mới nhất.")
-
-@bot.message_handler(commands=['dudoan'])
-def handle_dudoan(message):
-    msg = get_data_and_predict()
-    bot.send_message(message.chat.id, msg)
+def auto_loop():
+    global last_processed_phien, last_prediction, stats
+    while True:
+        try:
+            res = requests.get(API_LICH_SU, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                history = data.get('history', [])
+                if history:
+                    latest = history[0]
+                    phien = latest.get('Phien')
+                    
+                    if phien != last_processed_phien:
+                        # Kiểm tra thắng thua
+                        status = ""
+                        if last_prediction:
+                            is_win = (last_prediction.lower() in str(latest.get('Ket_qua', '')).lower())
+                            if is_win: 
+                                stats["thang"] += 1
+                                status = "\n✅ ĐÁNH GIÁ: THẮNG"
+                            else: 
+                                stats["thua"] += 1
+                                status = "\n❌ ĐÁNH GIÁ: THUA"
+                        
+                        # Dự đoán phiên tiếp
+                        du_doan, dot, r_tai, r_xiu = thuat_toan_du_doan(history[:10])
+                        
+                        msg = (
+                            f"╭━━━ KẾT QUẢ PHIÊN ━━━╮\n"
+                            f" Phiên: {phien}\n"
+                            f" Kết quả: {latest.get('Ket_qua')}{status}\n"
+                            f"╰━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
+                            f"╭━━━ 🤖 DỰ ĐOÁN 🤖 ━━━╮\n"
+                            f" 🎯 Phiên sau: {du_doan} {dot}\n"
+                            f" ⚖️ Tỷ lệ: Tài {r_tai}% · Xỉu {r_xiu}%\n"
+                            f" 📊 Tổng: {stats['thang']} Thắng - {stats['thua']} Thua\n"
+                            f"╰━━━━━━━━━━━━━━━━━━━━━━╯"
+                        )
+                        bot.send_message(CHAT_ID, msg)
+                        last_prediction = du_doan
+                        last_processed_phien = phien
+        except: pass
+        time.sleep(10)
 
 if __name__ == '__main__':
-    threading.Thread(target=run_flask, daemon=True).start()
-    bot.infinity_polling(skip_pending=True)
+    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000))), daemon=True).start()
+    threading.Thread(target=auto_loop, daemon=True).start()
+    bot.infinity_polling()
