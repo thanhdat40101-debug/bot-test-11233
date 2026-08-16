@@ -4,9 +4,6 @@ import requests
 import telebot
 from flask import Flask
 
-# -------------------------------------------------------------
-# 1. KHỞI TẠO WEB SERVER (FLASK)
-# -------------------------------------------------------------
 app = Flask(__name__)
 
 @app.route('/')
@@ -17,23 +14,24 @@ def run_flask():
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
 
-# -------------------------------------------------------------
-# 2. KHỞI TẠO TELEGRAM BOT
-# -------------------------------------------------------------
 BOT_TOKEN = "8527232891:AAGrm_KA-2EwX6nj39DYSIXm_guMXxKSebg"
 bot = telebot.TeleBot(BOT_TOKEN)
 
 API_LICH_SU = "https://bottele-production-4be9.up.railway.app/api/history/taixiu"
 
-def thuat_toan_danh_gia(data):
-    if not data or not isinstance(data, list):
-        return "Dữ liệu trả về từ API chưa đúng cấu trúc hoặc trống."
+def thuat_toan_danh_gia(data_list):
+    if not data_list or not isinstance(data_list, list):
+        return None
 
-    recent = data[:10]
-    
+    recent = data_list[:10]
     danh_sach_kq = []
+    
     for phien in recent:
-        kq = phien.get('ketqua', phien.get('result', ''))
+        if isinstance(phien, dict):
+            kq = phien.get('ketqua') or phien.get('result') or phien.get('kq') or ''
+        else:
+            kq = str(phien)
+            
         if kq:
             danh_sach_kq.append(str(kq).lower())
             
@@ -42,7 +40,7 @@ def thuat_toan_danh_gia(data):
     
     total = len(danh_sach_kq)
     if total == 0:
-        return "Đã kết nối API nhưng chưa đọc được cấu trúc kết quả."
+        return None
 
     rate_tai = round((tai_count / total) * 100)
     rate_xiu = round((xiu_count / total) * 100)
@@ -68,28 +66,32 @@ def send_welcome(message):
 
 @bot.message_handler(commands=['dudoan'])
 def handle_dudoan(message):
-    bot.reply_to(message, "🔄 Đang gọi API và phân tích dữ liệu...")
     try:
-        res = requests.get(API_LICH_SU, timeout=5)
+        res = requests.get(API_LICH_SU, timeout=7)
         if res.status_code == 200:
             data = res.json()
-            data_list = data if isinstance(data, list) else data.get('data', [])
             
-            thong_bao = thuat_toan_danh_gia(data_list)
-            bot.send_message(message.chat.id, thong_bao, parse_mode="Markdown")
-        else:
-            bot.send_message(message.chat.id, "❌ Không thể kết nối tới máy chủ API.")
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Lỗi hệ thống: {e}")
+            # Tự động trích xuất mảng dữ liệu từ các cấu trúc JSON khác nhau
+            data_list = []
+            if isinstance(data, list):
+                data_list = data
+            elif isinstance(data, dict):
+                data_list = data.get('data') or data.get('history') or data.get('results') or data.get('list') or []
 
-# -------------------------------------------------------------
-# 3. KÍCH HOẠT CHẠY DỰ ÁN
-# -------------------------------------------------------------
+            thong_bao = thuat_toan_danh_gia(data_list)
+            
+            if thong_bao:
+                bot.send_message(message.chat.id, thong_bao, parse_mode="Markdown")
+            else:
+                # Trả về phản hồi chi tiết từ API để kiểm tra
+                bot.send_message(message.chat.id, f"⚠️ API trả về dữ liệu rỗng/chưa đúng cấu trúc:\n`{str(data)[:200]}`", parse_mode="Markdown")
+        else:
+            bot.send_message(message.chat.id, f"❌ Máy chủ API báo lỗi HTTP: {res.status_code}")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Lỗi kết nối API: {e}")
+
 if __name__ == '__main__':
-    # Chạy Web server ở luồng phụ ngầm
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-
-    # Chạy Bot Telegram ở luồng chính
     print("Bot đang hoạt động...", flush=True)
     bot.infinity_polling(skip_pending=True)
