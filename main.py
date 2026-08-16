@@ -30,7 +30,8 @@ def thuat_toan_danh_gia(data_list):
     
     for phien in recent:
         if isinstance(phien, dict):
-            kq = phien.get('ketqua') or phien.get('result') or phien.get('kq') or ''
+            # Bắt chính xác từ khóa 'Ket_qua' của API thực tế
+            kq = phien.get('Ket_qua') or phien.get('ketqua') or phien.get('result') or ''
         else:
             kq = str(phien)
             
@@ -73,18 +74,19 @@ def handle_dudoan(message):
         if res.status_code == 200:
             data = res.json()
             
+            # Lấy mảng mảng danh sách từ khóa 'history'
             data_list = []
-            if isinstance(data, list):
+            if isinstance(data, dict):
+                data_list = data.get('history') or data.get('data') or []
+            elif isinstance(data, list):
                 data_list = data
-            elif isinstance(data, dict):
-                data_list = data.get('data') or data.get('history') or data.get('results') or data.get('list') or []
 
             thong_bao = thuat_toan_danh_gia(data_list)
             
             if thong_bao:
                 bot.send_message(message.chat.id, thong_bao, parse_mode="Markdown")
             else:
-                bot.send_message(message.chat.id, f"⚠️ API trả về dữ liệu rỗng/chưa đúng cấu trúc:\n`{str(data)[:200]}`", parse_mode="Markdown")
+                bot.send_message(message.chat.id, "⚠️ Không đọc được cột kết quả từ danh sách lịch sử.")
         else:
             bot.send_message(message.chat.id, f"❌ Máy chủ API báo lỗi HTTP: {res.status_code}")
     except Exception as e:
