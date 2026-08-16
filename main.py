@@ -3,130 +3,94 @@ import time
 import threading
 import requests
 import telebot
-import math
 from flask import Flask
 
 # -------------------------------------------------------------
-# CẤU HÌNH BOT MD5 
+# CẤU HÌNH BOT TELEGRAM
 # -------------------------------------------------------------
 BOT_TOKEN = "8463492839:AAGgzUV1a7O_8pzt6ZQ8wFLpTG_GrXFF4qI"
 CHAT_ID = "6285849261"
 API_MD5 = "https://bottele-production-4be9.up.railway.app/api/history/md5"
 
 # -------------------------------------------------------------
-# SYSTEM ENGINE: SMART MARKOV & Z-SCORE (TOÁN HỌC THỐNG KÊ)
+# ENGINE PHÂN TÍCH CHUỖI HEX MD5 (MD5 HASH PARSER)
 # -------------------------------------------------------------
-class SmartMarkovEngine:
-    def __init__(self):
-        self.mu = 10.5 # Điểm trung bình lý thuyết của 3 xúc xắc (3-18)
+class MD5HashEngine:
+    def parse_md5_features(self, md5_str):
+        """Bóc tách chuỗi MD5 32 ký tựHex thành thông số toán học"""
+        if not md5_str or len(md5_str) < 32 or md5_str == 'N/A':
+            return 50, 50, "Mã MD5 không khả dụng - Dùng mặc định"
 
-    def calculate_z_score(self, data):
-        if len(data) < 5:
-            return 0
+        # 1. Trích xuất 8 ký tự Hex cuối
+        last_8 = md5_str[-8:]
+        hex_val = int(last_8, 16)
         
-        # Lấy tổng điểm 5 phiên gần nhất
-        scores = [d['tong'] for d in data[:5] if d['tong'] > 0]
-        if not scores: return 0
+        # 2. Tính mật độ bit (Bit Parity)
+        binary_str = bin(hex_val)[2:].zfill(32)
+        ones_count = binary_str.count('1')
         
-        mean_current = sum(scores) / len(scores)
-        variance = sum((x - mean_current) ** 2 for x in scores) / len(scores)
-        std_dev = math.sqrt(variance) if variance > 0 else 1
+        # 3. Phân tích XOR Checksum giữa 4 khối Hex (mỗi khối 8 ký tự)
+        b1 = int(md5_str[0:8], 16)
+        b2 = int(md5_str[8:16], 16)
+        b3 = int(md5_str[16:24], 16)
+        b4 = int(md5_str[24:32], 16)
+        xor_checksum = b1 ^ b2 ^ b3 ^ b4
         
-        # Z-Score: Mức độ lệch khỏi trung bình lý thuyết
-        z_score = (scores[0] - self.mu) / std_dev
-        return z_score
-
-    def build_markov_chain(self, data):
-        if len(data) < 10:
-            return {'T': {'T': 0.5, 'X': 0.5}, 'X': {'X': 0.5, 'T': 0.5}}
-            
-        transitions = {'TT': 0, 'TX': 0, 'XT': 0, 'XX': 0}
+        # 4. Tính toán trọng số Tài / Xỉu dựa trên MD5 Hex
+        mod_score = hex_val % 100
+        tai_weight = (mod_score * 0.4) + ((ones_count / 32.0) * 100 * 0.4) + ((xor_checksum % 100) * 0.2)
         
-        # Quét lịch sử để xây ma trận chuyển đổi
-        for i in range(len(data) - 1):
-            curr = "T" if data[i+1]['is_tai'] else "X"
-            next_state = "T" if data[i]['is_tai'] else "X" # data[0] là mới nhất
-            transitions[curr + next_state] += 1
-            
-        # Tính xác suất
-        total_T = transitions['TT'] + transitions['TX']
-        total_X = transitions['XT'] + transitions['XX']
+        p_tai = round(max(15, min(85, tai_weight)))
+        p_xiu = 100 - p_tai
         
-        prob_T_to_T = transitions['TT'] / total_T if total_T > 0 else 0.5
-        prob_T_to_X = transitions['TX'] / total_T if total_T > 0 else 0.5
-        prob_X_to_X = transitions['XX'] / total_X if total_X > 0 else 0.5
-        prob_X_to_T = transitions['XT'] / total_X if total_X > 0 else 0.5
-        
-        return {
-            'T': {'T': prob_T_to_T, 'X': prob_T_to_X},
-            'X': {'X': prob_X_to_X, 'T': prob_X_to_T}
-        }
+        ly_do = f"MD5 XOR: `{hex(xor_checksum)[-6:]}` | Mật độ Bit 1: {ones_count}/32 | Hex Mod: {mod_score}"
+        return p_tai, p_xiu, ly_do
 
     def analyze(self, history):
-        # 1. Làm sạch dữ liệu
         data = []
         for p in history:
             if not isinstance(p, dict): continue
             tong = p.get('Tong') or p.get('tong') or 0
+            ma_md5 = p.get('Ma_hash') or p.get('md5') or p.get('hash') or p.get('MD5') or ''
             if tong > 0:
                 is_tai = 1 if tong >= 11 else 0
             else:
                 kq = str(p.get('Ket_qua', '')).lower()
                 is_tai = 1 if 'tai' in kq or 't' in kq else 0
                 tong = 11 if is_tai else 8
-            data.append({'is_tai': is_tai, 'tong': tong})
+            data.append({'is_tai': is_tai, 'tong': tong, 'md5': ma_md5})
 
-        if len(data) < 10:
-            return "Tài", "🔴", 50, 50, 50, "⚪", ["Đang thu thập thêm dữ liệu"]
+        if not data:
+            return "Tài", "🔴", 50, 50, 50, "⚪", ["Chờ dữ liệu"]
 
-        # 2. Lấy trạng thái hiện tại
-        current_state = "T" if data[0]['is_tai'] == 1 else "X"
+        # Phân tích chuỗi MD5 phiên mới nhất
+        latest_md5 = data[0]['md5']
+        p_tai_hash, p_xiu_hash, ly_do_hash = self.parse_md5_features(latest_md5)
+
+        # Trọng số lịch sử 3 phiên gần nhất (30% tỷ trọng)
+        short_trend = sum(d['is_tai'] for d in data[:3])
         
-        # 3. Chạy Markov Chain
-        markov_matrix = self.build_markov_chain(data[:20]) # Dùng 20 phiên gần nhất
-        markov_prob_T = markov_matrix[current_state]['T'] * 100
-        markov_prob_X = markov_matrix[current_state]['X'] * 100
-
-        # 4. Tính điểm Z-Score (Mean Reversion)
-        z_score = self.calculate_z_score(data)
+        # Tổng hợp lực chọn (70% từ mã MD5 Hex, 30% từ xu hướng phiên)
+        final_tai = (p_tai_hash * 0.7) + ((short_trend / 3.0) * 100 * 0.3)
+        final_xiu = 100 - final_tai
         
-        # 5. Cân bằng Trọng số (Kết hợp Markov và Z-Score)
-        final_score_T = markov_prob_T
-        final_score_X = markov_prob_X
-        
-        # Áp dụng Z-Score để điều chỉnh xu hướng
-        if z_score > 1.5:
-            final_score_X += 15
-            final_score_T -= 15
-            ly_do = f"Điểm đang quá cao (Z={z_score:.1f}) -> Hồi lưu về Xỉu"
-        elif z_score < -1.5:
-            final_score_T += 15
-            final_score_X -= 15
-            ly_do = f"Điểm đang quá thấp (Z={z_score:.1f}) -> Nảy lên Tài"
-        else:
-            ly_do = f"Phân tích Markov Chain (Từ {current_state})"
-
-        # 6. Chốt tỷ lệ
-        total_score = final_score_T + final_score_X
-        if total_score == 0: total_score = 1
-        p_tai = round(max(10, min(90, (final_score_T / total_score) * 100)))
+        p_tai = round(max(10, min(90, final_tai)))
         p_xiu = 100 - p_tai
         
         confidence = max(p_tai, p_xiu)
         du_doan = "Tài" if p_tai > p_xiu else "Xỉu"
         dot = "🔴" if du_doan == "Tài" else "🔵"
         
-        # Chuỗi biểu tượng
         cau_list = ["🔴" if d['is_tai'] == 1 else "🔵" for d in data[:7]]
         cau_str = "".join(reversed(cau_list))
 
-        return du_doan, dot, p_tai, p_xiu, confidence, cau_str, [ly_do]
+        return du_doan, dot, p_tai, p_xiu, confidence, cau_str, [ly_do_hash]
 
 # Khởi tạo Engine
-engine = SmartMarkovEngine()
+engine = MD5HashEngine()
 
 # -------------------------------------------------------------
-# KHỞI TẠO BOT & FLASK SERVER
+# FLASK & TELEGRAM BOT AUTOMATION
 # -------------------------------------------------------------
 app = Flask(__name__)
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -137,7 +101,7 @@ stats = {"thang": 0, "thua": 0}
 
 @app.route('/')
 def home():
-    return "Bot MD5 Smart Engine (Markov + Z-Score) đang chạy 24/7!"
+    return "Bot MD5 Hex Parsing Engine Online 24/7!"
 
 def auto_process():
     global last_phien, last_predict, stats
@@ -176,7 +140,7 @@ def auto_process():
                         tong_p = stats["thang"] + stats["thua"]
                         rate_win = round((stats["thang"] / tong_p) * 100, 1) if tong_p > 0 else 0
 
-                        # GỌI HỆ THỐNG SMART MARKOV & Z-SCORE
+                        # Gọi thuật toán phân tích MD5 Hex
                         du_doan, dot, r_tai, r_xiu, do_tin_cay, cau_str, ly_do = engine.analyze(history)
                         phien_next = phien + 1 if isinstance(phien, int) else "N/A"
 
@@ -189,16 +153,16 @@ def auto_process():
                             f" 🔑 Mã MD5: `{ma_md5}`\n"
                             f" 🎯 Kết quả: {kq}{status_eval}\n"
                             f"╰━━━━━━━━━━━━━━━━━━━━━━╯\n\n"
-                            f"╭━━━ 🤖 DỰ ĐOÁN THÔNG MINH 🤖 ━━━╮\n"
+                            f"╭━━━ 🤖 DỰ ĐOÁN MD5 HEX 🤖 ━━━╮\n"
                             f" 1️⃣2️⃣ Phiên kế tiếp: {phien_next}\n\n"
                             f" 🎯 Dự đoán: {du_doan} {dot}\n"
                             f" 📊 Độ tin cậy: {do_tin_cay}%\n"
-                            f" ⚖️ Trọng số: Tài {r_tai}% · Xỉu {r_xiu}%\n"
+                            f" ⚖️ Trọng số MD5: Tài {r_tai}% · Xỉu {r_xiu}%\n"
                             f"╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯\n"
-                            f"💡 **Lý do dự đoán:**\n{str_ly_do}\n\n"
+                            f"💡 **Cơ sở Hex MD5:**\n{str_ly_do}\n\n"
                             f"🌐 Cầu: {cau_str}\n"
                             f"📊 Thành tích: {stats['thang']} Thắng · {stats['thua']} Thua ({rate_win}%)\n"
-                            f"🎮 Smart Engine (Markov + Z-Score)"
+                            f"🎮 MD5 Hex Parsing Engine Active"
                         )
 
                         bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
@@ -211,13 +175,12 @@ def auto_process():
 
 @bot.message_handler(commands=['start', 'help'])
 def start_cmd(message):
-    bot.reply_to(message, "Bot MD5 Smart Engine đã sẵn sàng và đang chạy tự động 24/7!")
+    bot.reply_to(message, "Bot MD5 Hex Engine đã sẵn sàng!")
 
 if __name__ == '__main__':
-    # Tự động lấy port từ môi trường (Render), mặc định 10000
     port = int(os.environ.get('PORT', 10000))
     threading.Thread(target=lambda: app.run(host='0.0.0.0', port=port), daemon=True).start()
     threading.Thread(target=auto_process, daemon=True).start()
-    print("Khởi động thành công bot MD5 với thuật toán Markov + Z-Score...", flush=True)
+    print("Khởi chạy MD5 Hex Processing Bot...", flush=True)
     bot.infinity_polling(skip_pending=True)
-        
+    
